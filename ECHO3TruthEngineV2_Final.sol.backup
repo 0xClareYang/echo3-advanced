@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol";
+
+contract ECHO3TruthEngineV2_Final is VRFConsumerBaseV2 {
+    VRFCoordinatorV2Interface private immutable COORDINATOR;
+    LinkTokenInterface private immutable LINKTOKEN;
+    
+    uint64 private s_subscriptionId;
+    bytes32 private immutable s_keyHash;
+    uint32 private constant CALLBACK_GAS_LIMIT = 2500000;
+    uint16 private constant REQUEST_CONFIRMATIONS = 3;
+    uint32 private constant NUM_WORDS = 1;
+    
+    mapping(uint256 => TruthQuest) public truthQuests;
+    mapping(uint256 => uint256) public requestIdToQuest;
+    uint256 public nextQuestId = 1;
+    
+    struct TruthQuest {
+        uint256 questId;
+        address seeker;
+        string question;
+        uint256 randomResult;
+        bool isComplete;
+        uint256 timestamp;
+        TruthLevel truthLevel;
+    }
+    
+    enum TruthLevel {
+        SEEKING,      // 0 - Seeking truth
+        PARTIAL,      // 1 - Partial truth revealed
+        SIGNIFICANT,  // 2 - Significant discovery  
+        PROFOUND,     // 3 - Profound insight
+        ULTIMATE      // 4 - Ultimate truth
+    }
+    
+    event TruthQuestCreated(uint256 indexed questId, address indexed seeker, string question);
+    event TruthRevealed(uint256 indexed questId, uint256 randomness, TruthLevel truthLevel);
+    event RandomnessRequested(uint256 indexed requestId, uint256 indexed questId);
+    
+    constructor(
+        uint64 subscriptionId,
+        address vrfCoordinator,
+        address linkToken,
+        bytes32 keyHash
+    ) VRFConsumerBaseV2(vrfCoordinator) {
+        COORDINATOR = VRFCoordinatorV2Interface(vrfCoordinator);
+        LINKTOKEN = LinkTokenInterface(linkToken);
+        s_subscriptionId = subscriptionId;
+        s_keyHash = keyHash;
+    }
+    
+    function seekTruth(string memory question) external returns (uint256) {
+        require(bytes(question).length > 0, "Question cannot be empty");
+        
+        uint256 questId = nextQuestId++;
+        
+        // Create truth exploration quest
+        truthQuests[questId] = TruthQuest({
+            questId: questId,
+            seeker: msg.sender,
+            question: question,
+            randomResult: 0,
+            isComplete: false,
+            timestamp: block.timestamp,
+            truthLevel: TruthLevel.SEEKING
+        });
+        
+        // Request Chainlink VRF randomness
+        uint256 requestId = COORDINATOR.requestRandomWords(
+            s_keyHash,
+            s_subscriptionId,
+            REQUEST_CONFIRMATIONS,
+            CALLBACK_GAS_LIMIT,
+            NUM_WORDS
+        );
+        
+        requestIdToQuest[requestId] = questId;
+        
+        emit TruthQuestCreated(questId, msg.sender, question);
+        emit RandomnessRequested(requestId, questId);
+        
+        return questId;
+    }
+    
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+        uint256 questId = requestIdToQuest[requestId];
+        require(questId != 0, "Quest not found");
+        
+        TruthQuest storage quest = truthQuests[questId];
+        require(!quest.isComplete, "Quest already complete");
+        
+        uint256 randomness = randomWords[0];
+        quest.randomResult = randomness;
+        quest.isComplete = true;
+        
+        // Determine truth level based on randomness
+        uint256 truthSeed = randomness % 100;
+        
+        if (truthSeed < 20) {
+            quest.truthLevel = TruthLevel.PARTIAL;
+        } else if (truthSeed < 50) {
+            quest.truthLevel = TruthLevel.SIGNIFICANT;
+        } else if (truthSeed < 80) {
+            quest.truthLevel = TruthLevel.PROFOUND;
+        } else {
+            quest.truthLevel = TruthLevel.ULTIMATE;
+        }
+        
+        emit TruthRevealed(questId, randomness, quest.truthLevel);
+    }
+    
+    function getQuest(uint256 questId) external view returns (TruthQuest memory) {
+        return truthQuests[questId];
+    }
+    
+    function getTruthMessage(uint256 questId) external view returns (string memory) {
+        TruthQuest memory quest = truthQuests[questId];
+        require(quest.isComplete, "Truth quest not complete");
+        
+        if (quest.truthLevel == TruthLevel.PARTIAL) {
+            return "The mists part slightly, revealing fragments of truth...";
+        } else if (quest.truthLevel == TruthLevel.SIGNIFICANT) {
+            return "The veil lifts, showing significant patterns in reality...";
+        } else if (quest.truthLevel == TruthLevel.PROFOUND) {
+            return "Deep currents of truth flow through your consciousness...";
+        } else {
+            return "The ultimate truth blazes forth with cosmic clarity!";
+        }
+    }
+    
+    function getSubscriptionId() external view returns (uint64) {
+        return s_subscriptionId;
+    }
+}
